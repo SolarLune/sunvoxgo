@@ -48,6 +48,10 @@ channel.PlayFromBeginning()
 
 Build your app or game as usual, but include the relevant Sunvox development libraries / library directory (`sunvox_lib-2.1.2b` in the example) somewhere relative to your output executable so the libaries can be loaded dynamically at runtime.
 
+## What's Implemented?
+
+Most significantly-useful things that are available from the development library. There's still some areas that haven't been implemented, though, like adding and removing new modules or patterns, loading samples or instruments from files, or getting the audio scope / waveform for a module during playback.
+
 ## LICENSE
 
 The license for this Go bindings package itself is MIT. To use the bindings, however, you must adhere to the license outlined by the author of the development library (Nightradio), which can be found [here](example/sunvox_lib-2.1.2b/docs/license/LICENSE.txt).
