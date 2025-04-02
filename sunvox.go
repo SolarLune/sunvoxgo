@@ -376,8 +376,9 @@ func (e *SunvoxEngine) Deinit() error {
 	return nil
 }
 
-// CreateChannel creates a SunvoxChannel and assigns it a channel index.
-// Note that a SunvoxEngine can have only 16 channels maximum.
+// CreateChannel creates a SunvoxChannel and assigns it a custom ID to identify it.
+// You may choose to assign unique IDs to each Channel.
+// Note that a SunvoxEngine can only create 16 channels maximum.
 func (e *SunvoxEngine) CreateChannel(id any) (*SunvoxChannel, error) {
 
 	if !e.Initialized {
@@ -404,10 +405,12 @@ func (e *SunvoxEngine) CreateChannel(id any) (*SunvoxChannel, error) {
 		return nil, errors.New("error: error creating SunvoxChannel; error code" + strconv.Itoa(int(res)))
 	}
 
-	return &SunvoxChannel{
+	e.Channels[available] = &SunvoxChannel{
 		ID:    id,
 		Index: available,
-	}, nil
+	}
+
+	return e.Channels[available], nil
 }
 
 // ChannelByID returns the first channel with the given ID. If onlyNotInUse is set to true, then only channels that are not playing
@@ -415,8 +418,8 @@ func (e *SunvoxEngine) CreateChannel(id any) (*SunvoxChannel, error) {
 // If no channel is found, ChannelByID returns nil.
 func (e *SunvoxEngine) ChannelByID(id any, onlyNotInUse bool) *SunvoxChannel {
 	for i := 0; i < 16; i++ {
-		c := e.Channels[i]
-		if c.ID == id {
+		c, ok := e.Channels[i]
+		if ok && c.ID == id {
 			if onlyNotInUse && c.IsPlaying() {
 				continue
 			}
