@@ -34,14 +34,16 @@ func main() {
 	}
 
 	channel.LoadFileFromFS(os.DirFS("./"), "assets/CityStatesOfGENOW.sunvox")
-
 	channel.PlayFromBeginning()
 
 	for channel.IsPlaying() {
+
 		command := " "
 		fmt.Println("")
 		fmt.Println("Enter any of the following commands to change music playback:")
-		fmt.Println("s+ : Speed Up | s- : Speed Up | q : Quit | p+ : Pitch Up | p- : Pitch Down")
+		fmt.Println("s+ : Speed Up | s- : Speed Up | q : Quit | p+ : Pitch Up | p- : Pitch Down | d : play just the faster breakdown | r : return to the entire song")
+		fmt.Println("____")
+		fmt.Print("> ")
 		fmt.Scanln(&command)
 		switch command {
 		case "s+":
@@ -59,7 +61,7 @@ func main() {
 				if err != nil {
 					panic(err) // Should never happen
 				}
-				// Skip drums that are above the main melody
+				// Skip drums that are above the main melody in the project file
 				if p.Y() < 0 {
 					return true
 				}
@@ -68,20 +70,20 @@ func main() {
 					for track := range patternData.TrackCount() {
 						noteValue, _ := patternData.Note(track, line)
 						if noteValue < 128 {
-							patternData.SetNote(track, line, noteValue+3)
+							patternData.SetNote(track, line, noteValue+1)
 						}
 					}
 				}
 				return true
 			})
-			fmt.Println("Song pitched up by 3 semitones")
+			fmt.Println("Song pitched up by 1 semitone")
 		case "p-":
 			channel.ForEachPattern(func(p *sunvoxgo.SunvoxPattern) bool {
 				patternData, err := p.Data()
 				if err != nil {
 					panic(err) // Should never happen
 				}
-				// Skip drums that are above the main melody
+				// Skip drums that are above the main melody in the project file
 				if p.Y() < 0 {
 					return true
 				}
@@ -90,29 +92,26 @@ func main() {
 					for track := range patternData.TrackCount() {
 						noteValue, _ := patternData.Note(track, line)
 						if noteValue < 128 {
-							patternData.SetNote(track, line, noteValue-3)
+							patternData.SetNote(track, line, noteValue-1)
 						}
 					}
 				}
 				return true
 			})
-			fmt.Println("Song pitched down by 3 semitones")
+			fmt.Println("Song pitched down by 1 semitone")
+
+		case "d":
+			if !channel.HasCustomLoop() {
+				channel.SetCustomLoop(512, 768)
+			}
+			channel.PlayFromBeginning()
+		case "r":
+			channel.ResetCustomLoop()
+			channel.PlayFromBeginning()
 
 		default:
 			fmt.Println("Command '" + command + "' is not recognized")
 		}
 	}
-
-	// time.Sleep(time.Second * 4)
-
-	// channel.SetBPM(channel.BPM() * 1.2)
-
-	// mod := channel.ModuleByName("Analog generator")
-
-	// fmt.Println(mod.SetControllerValue(1, 128))
-
-	// time.Sleep(time.Second * 100)
-
-	// engine.Init(NewInitConfig().Device("alsa"), 44100, 0)
 
 }

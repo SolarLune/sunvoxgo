@@ -44,6 +44,12 @@ channel.PlayFromBeginning()
 
 ```
 
+## Tips
+
+- Channel.Seek() is slowest when executed on channels that are actively playing back music. It's faster on channels that aren't (so if you can rearrange the order of seeking and playing, that would be wise).
+- Playback functions can be slow, so you can call them asynchronously if you don't need them to execute immediately.
+- Sunvox can be very powerful; it includes the ability to read input from microphones and other audio input devices. This can cause hanging if used on a system with an audio server that only supports one application requesting the audio input at a time (i.e. Alsa on Linux), so it might be wise to remove that module if you don't expressly need it, or use an audio server that supports more options (Pulse, Jack, etc).
+
 ## Distribution
 
 Build your app or game as usual, but include the relevant Sunvox development libraries / library directory (`sunvox_lib-2.1.2b` in the example) somewhere relative to your output executable so the libaries can be loaded dynamically at runtime.
@@ -51,6 +57,8 @@ Build your app or game as usual, but include the relevant Sunvox development lib
 ## What's Implemented?
 
 Most significantly-useful things that are available from the development library. There's still some areas that haven't been implemented, though, like adding and removing new modules or patterns, loading samples or instruments from files, or getting the audio scope / waveform for a module during playback.
+
+Windows, Mac, and Linux support should work, but while the development library builds exist for mobile and web, I haven't implemented them. Web may be simple as the library is in a WASM format, so it might just need some glue code to call into Javascript to instantiate the WASM object and then tie the functions in Go to the functions implemented in the WASM (basically what purego already does for the Sunvox engine C libraries on desktop).
 
 ## LICENSE
 
