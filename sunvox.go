@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -95,6 +94,15 @@ func (i *InitConfig) WithAudioDriverLinuxPipewire() *InitConfig {
 	return i
 }
 
+// Set the audio driver to be used to SDL on any OSes that support it.
+func (i *InitConfig) WithAudioDriverSDL() *InitConfig {
+	if len(i.ExtraString) > 0 {
+		i.ExtraString += "|"
+	}
+	i.ExtraString += "audiodriver=sdl"
+	return i
+}
+
 // Set the audio driver to be used to PulseAudio on Linux.
 // Doesn't do anything on other OSes.
 func (i *InitConfig) WithAudioDriverLinuxPulseAudio() *InitConfig {
@@ -116,6 +124,7 @@ func (i *InitConfig) WithDevice(deviceName string) *InitConfig {
 	return i
 }
 
+// WithSampleRate sets the sample rate of the configuration to the specified value.
 func (i *InitConfig) WithSampleRate(sampleRate int) *InitConfig {
 	i.SampleRate = sampleRate
 	return i
@@ -536,7 +545,7 @@ func (e *SunvoxEngine) ChannelByIndex(index int) *SunvoxChannel {
 	return nil
 }
 
-// ForEachChannel loops through each created SunvoxChannel in the Engine.
+// ForEachChannel loops through each created SunvoxChannel in the engine.
 func (e *SunvoxEngine) ForEachChannel(forEach func(channel *SunvoxChannel) bool) {
 
 	for _, c := range e.channels {
@@ -582,7 +591,7 @@ type SunvoxChannel struct {
 	byteData []byte
 	Index    int
 	ID       any
-	playing  atomic.Bool
+	playing  bool
 	filename string
 
 	hasCustomLoop   bool
@@ -646,6 +655,11 @@ func (s *SunvoxChannel) ProjectFilename() string {
 	return s.filename
 }
 
+// SetProjectFilename sets the project's filename.
+func (s *SunvoxChannel) SetProjectFilename(fname string) {
+	s.filename = fname
+}
+
 // // Reopen closes and reopens the SunvoxChannel with the same index and ID.
 // func (s *SunvoxChannel) Reopen() error {
 
@@ -705,7 +719,7 @@ func (s *SunvoxChannel) SetVolume(volume float32) {
 
 // Volume returns the current volume of the SunvoxChannel, ranging from 0 to 1.
 func (s *SunvoxChannel) Volume() (float32, error) {
-	res := setSlotVolume(s.Index, -1) // Negative values are ignored
+	res := setSlotVolume(s.Index, -1) // Negative values are ignored; the function returns the current volume
 
 	if res < 0 {
 		return 0, errors.New(fmt.Sprintf("error retrieving SunvoxChannel index %d volume; error code %d", s.Index, res))
@@ -718,49 +732,55 @@ func (s *SunvoxChannel) Volume() (float32, error) {
 // PlayFromBeginning plays the song contained within the SunvoxChannel from the beginning (line number 0).
 //
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
-//
-// Note that functions that initiate or modify playback on a playing SunvoxChannel will be slow (on the order of ~50-100ms).
-// If you do not need it immediately, it might be best to queue playback using one of the Queue* functions.
 func (s *SunvoxChannel) PlayFromBeginning() error {
+
+	// It's faster to make changes while the audio engine is paused, regardless of if a song is playing.
+	s.PauseAudioEngine()
+	defer s.ResumeAudioEngine()
+
 	res := playFromBeginning(s.Index)
 	if res < 0 {
 		return errors.New(fmt.Sprintf("error playing SunvoxChannel index %d; error code %d", s.Index, res))
 	}
-	s.playing.Store(true)
+	s.playing = true
+
 	return nil
+
 }
 
 // Play plays the song contained within the SunvoxChannel from wherever the playhead currently is.
 // It will also resume playback on stopped SunvoxChannels.
 //
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
-//
-// Note that functions that initiate or modify playback on a playing SunvoxChannel will be slow (on the order of ~50-100ms).
-// If you do not need it immediately, it might be best to queue playback using one of the Queue* functions.
 func (s *SunvoxChannel) Play() error {
+
+	// It's faster to make changes while the audio engine is paused, regardless of if a song is playing.
+	s.PauseAudioEngine()
+	defer s.ResumeAudioEngine()
+
 	res := play(s.Index)
 	if res < 0 {
 		return errors.New(fmt.Sprintf("error playing SunvoxChannel index %d; error code %d", s.Index, res))
 	}
-	s.playing.Store(true)
+	s.playing = true
+
 	return nil
 }
 
 // Seek seeks playback to the given line number.
 //
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
-//
-// Note that for Seek specifically, it will be slow (on the order of ~50-100ms) if called on a playing SunvoxChannel;
-// if called on a stopped Channel, it is less egregious in time-cost.
-// If you do not need it immediately and it is being called during playback,
-// it might be best to queue playback using one of the Queue* functions.
 func (s *SunvoxChannel) Seek(lineNum int) error {
+
+	// It's faster to make changes while the audio engine is paused, regardless of if a song is playing.
+	s.PauseAudioEngine()
+	defer s.ResumeAudioEngine()
 
 	res := rewind(s.Index, lineNum)
 
@@ -775,12 +795,17 @@ func (s *SunvoxChannel) Seek(lineNum int) error {
 // If executed the second time, all continuing audio (like repeating echos or delays) is stopped, like in Sunvox.
 //
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 //
 // Note that functions that initiate or modify playback on a playing SunvoxChannel will be slow (on the order of ~50-100ms).
 // If you do not need it immediately, it might be best to queue playback using one of the Queue* functions.
 func (s *SunvoxChannel) Stop() error {
+
+	// It's faster to make changes while the audio engine is paused, regardless of if a song is playing.
+	s.PauseAudioEngine()
+	defer s.ResumeAudioEngine()
+
 	if !s.IsValid() {
 		return nil
 	}
@@ -788,99 +813,9 @@ func (s *SunvoxChannel) Stop() error {
 	if res < 0 {
 		return errors.New(fmt.Sprintf("error playing SunvoxChannel index %d; error code %d", s.Index, res))
 	}
-	s.playing.Store(false)
+	s.playing = false
+
 	return nil
-}
-
-// PlayAsync runs a goroutine that attempts to begin project playback for the project in the current SunvoxChannel asynchronously,
-// avoiding blocking while waiting for Sunvox to execute.
-//
-// The function returns a FutureError that will contain the error output from the function call after execution returns.
-func (s *SunvoxChannel) PlayAsync() *FutureError {
-	// Set it to true real quick so queueing counts as playing, even though it's not immediate
-	s.playing.Store(true)
-	f := newFutureError()
-	go func(f *FutureError) {
-		err := s.Play()
-		if err != nil {
-			s.playing.Store(false)
-		}
-		f.errChan <- err
-	}(f)
-	return f
-}
-
-// StopAsync runs a goroutine that attempts to stop project playback for the project in the current SunvoxChannel asynchronously,
-// avoiding blocking while waiting for Sunvox to execute.
-//
-// The function returns a FutureError that will contain the error output from the function call after execution returns.
-func (s *SunvoxChannel) StopAsync() *FutureError {
-	wasPlaying := s.playing.Load()
-	s.playing.Store(false) // Set it to true real quick so queueing counts as playing, even though it's not immediate
-	f := newFutureError()
-	go func(f *FutureError) {
-		err := s.Stop()
-		if err != nil {
-			s.playing.Store(wasPlaying)
-		}
-		f.errChan <- err
-	}(f)
-	return f
-}
-
-// PlayFromBeginningAsync runs a goroutine that attempts to play the project in the current SunvoxChannel asynchronously
-// from the beginning, avoiding blocking while waiting for Sunvox to execute.
-//
-// The function returns a FutureError that will contain the error output from the function call after execution returns.
-func (s *SunvoxChannel) PlayFromBeginningAsync() *FutureError {
-	s.playing.Store(true) // Set it to true real quick so queueing counts as playing, even though it's not immediate
-	f := newFutureError()
-	go func(f *FutureError) {
-		err := s.PlayFromBeginning()
-		if err != nil {
-			s.playing.Store(false)
-		}
-		f.errChan <- err
-	}(f)
-	return f
-}
-
-// SeekAsync runs a goroutine that attempts to seek the project in the current SunvoxChannel asynchronously, avoiding
-// blocking while waiting for Sunvox to execute.
-//
-// The function returns a FutureError that will contain the error output from the function call after execution returns.
-func (s *SunvoxChannel) SeekAsync(lineNum int) *FutureError {
-	f := newFutureError()
-	go func(f *FutureError, lineNum int) {
-		f.errChan <- s.Seek(lineNum)
-	}(f, lineNum)
-	return f
-}
-
-// SeekAsync runs a goroutine that attempts to seek and then play the project in the current SunvoxChannel asynchronously, avoiding
-// blocking while waiting for Sunvox to execute.
-//
-// The function returns a FutureError that will contain the error output from the function call after execution returns.
-func (s *SunvoxChannel) SeekAndPlayAsync(lineNum int) *FutureError {
-
-	s.playing.Store(true)
-
-	f := newFutureError()
-	go func(f *FutureError, lineNum int) {
-		err := s.Seek(lineNum)
-		if err != nil {
-			f.errChan <- err
-			return
-		}
-
-		err = s.Play()
-		if err != nil {
-			s.playing.Store(false)
-		}
-		f.errChan <- err
-
-	}(f, lineNum)
-	return f
 }
 
 const customLoopLineAmount = 99999999
@@ -892,90 +827,100 @@ const customLoopLineAmount = 99999999
 //
 // Be sure to restart playback from the beginning / line 0 after calling SetCustomLoop, as Sunvox's engine
 // finds the bounds of the current song for looping / ending purposes when playback is initiated.
-//
-// UnisolatePatterns reverses this.
-func (e *SunvoxChannel) SetCustomLoop(startX, endX int) {
+func (s *SunvoxChannel) SetCustomLoop(startX, endX int) {
 
-	e.ResetCustomLoop()
+	if startX == s.customLoopStart && endX == s.customLoopEnd {
+		return
+	}
+
+	s.ResetCustomLoop()
+
+	// It's faster to make changes while the audio engine is paused, regardless of if a song is playing.
+	s.PauseAudioEngine()
+	defer s.ResumeAudioEngine()
 
 	leastX := math.MaxInt
 
-	e.ForEachPattern(func(pattern *SunvoxPattern) bool {
+	s.ForEachPattern(func(pattern *SunvoxPattern) bool {
 
 		lc, err := pattern.LineCount()
 		if err != nil {
 			return true
 		}
 
-		if pattern.X() >= startX && pattern.X()+lc <= endX {
-			if pattern.X() < leastX {
-				leastX = pattern.X()
+		if pattern.CustomLooplessX() >= startX && pattern.CustomLooplessX()+lc <= endX {
+			if pattern.CustomLooplessX() < leastX {
+				leastX = pattern.CustomLooplessX()
 			}
-		} else {
+		} else if pattern.X() > -100_000 {
 			pattern.Move(-customLoopLineAmount, 0)
 		}
 		return true
 
 	})
 
-	e.ForEachPattern(func(pattern *SunvoxPattern) bool {
+	s.ForEachPattern(func(pattern *SunvoxPattern) bool {
 		if pattern.X() > 0 {
 			pattern.Move(-leastX, 0)
 		}
 		return true
 	})
 
-	e.hasCustomLoop = true
-	e.customLoopStart = leastX
-	e.customLoopEnd = endX - leastX
+	s.hasCustomLoop = true
+	s.customLoopStart = leastX
+	s.customLoopEnd = endX - leastX
 
 }
 
 // CustomLoopStart returns the start of the custom loop, if one is set.
 // If one is not set, then it returns -1.
-func (e *SunvoxChannel) CustomLoopStart() int {
-	if e.hasCustomLoop {
-		return e.customLoopStart
+func (s *SunvoxChannel) CustomLoopStart() int {
+	if s.hasCustomLoop {
+		return s.customLoopStart
 	}
 	return 0
 }
 
 // CustomLoopEnd returns the end of the custom loop, if one is set.
 // If one is not set, then it returns -1.
-func (e *SunvoxChannel) CustomLoopEnd() int {
-	if e.hasCustomLoop {
-		return e.customLoopEnd
+func (s *SunvoxChannel) CustomLoopEnd() int {
+	if s.hasCustomLoop {
+		return s.customLoopEnd
 	}
 	return 0
 }
 
-// ResetCustomLoop resets any custom loop set by returning patterns isolated by IsolatePatterns back to their original locations.
-func (e *SunvoxChannel) ResetCustomLoop() {
+// ResetCustomLoop resets any custom loop by moving Patterns back to their original locations.
+func (s *SunvoxChannel) ResetCustomLoop() {
 
-	if !e.hasCustomLoop {
+	if !s.hasCustomLoop {
 		return
 	}
 
-	e.ForEachPattern(func(pattern *SunvoxPattern) bool {
+	// It's faster to make changes while the audio engine is paused, regardless of if a song is playing.
+	s.PauseAudioEngine()
+	defer s.ResumeAudioEngine()
+
+	s.ForEachPattern(func(pattern *SunvoxPattern) bool {
 
 		if pattern.X() < 0 {
 			pattern.Move(customLoopLineAmount, 0)
 		} else {
-			pattern.Move(e.customLoopStart, 0)
+			pattern.Move(s.customLoopStart, 0)
 		}
 
 		return true
 	})
 
-	e.customLoopStart = 0
-	e.customLoopEnd = 0
-	e.hasCustomLoop = false
+	s.customLoopStart = 0
+	s.customLoopEnd = 0
+	s.hasCustomLoop = false
 
 }
 
 // HasCustomLoop returns if a custom loop is set.
-func (e *SunvoxChannel) HasCustomLoop() bool {
-	return e.hasCustomLoop
+func (s *SunvoxChannel) HasCustomLoop() bool {
+	return s.hasCustomLoop
 }
 
 // SetOnCurrentLineChange sets a callback to be run on another goroutine that signals when the line changes.
@@ -988,10 +933,10 @@ func (e *SunvoxChannel) HasCustomLoop() bool {
 //
 // The goroutine will exit if the Channel closes or another callback is set.
 // Setting onLineChange to nil will cancel any currently running callback.
-func (e *SunvoxChannel) SetOnCurrentLineChange(pollResolution time.Duration, onLinechange func(line int) bool) {
+func (s *SunvoxChannel) SetOnCurrentLineChange(pollResolution time.Duration, onLinechange func(line int) bool) {
 
 	// Attempt to cancel a running goroutine if one has been set for this callback
-	e.cancelRunningGoroutine("SetOnCurrentLineChange")
+	s.cancelRunningGoroutine("SetOnCurrentLineChange")
 
 	if onLinechange == nil {
 		return
@@ -1012,7 +957,7 @@ func (e *SunvoxChannel) SetOnCurrentLineChange(pollResolution time.Duration, onL
 				return
 			default:
 
-				l := e.CurrentLine()
+				l := s.CurrentLine()
 
 				if l != line {
 					if onLinechange != nil {
@@ -1028,7 +973,7 @@ func (e *SunvoxChannel) SetOnCurrentLineChange(pollResolution time.Duration, onL
 
 		}
 	}(cancel)
-	e.goroutineCancels["SetOnCurrentLineChange"] = cancel
+	s.goroutineCancels["SetOnCurrentLineChange"] = cancel
 }
 
 // SetOnPatternTouch sets a callback to be run on another goroutine when patterns are touched by the playhead during playback.
@@ -1044,10 +989,10 @@ func (e *SunvoxChannel) SetOnCurrentLineChange(pollResolution time.Duration, onL
 //
 // The goroutine will exit if the Channel closes or another callback is set.
 // Setting onPatternTouch to nil will cancel any currently running callback.
-func (e *SunvoxChannel) SetOnPatternTouch(pollResolution time.Duration, onPatternTouch func(p *SunvoxPattern, justStarted bool) bool) {
+func (s *SunvoxChannel) SetOnPatternTouch(pollResolution time.Duration, onPatternTouch func(p *SunvoxPattern, justStarted bool) bool) {
 
 	// Attempt to cancel a running goroutine if one has been set for this callback
-	e.cancelRunningGoroutine("SetOnPatternTouch")
+	s.cancelRunningGoroutine("SetOnPatternTouch")
 
 	if onPatternTouch == nil {
 		return
@@ -1071,8 +1016,8 @@ func (e *SunvoxChannel) SetOnPatternTouch(pollResolution time.Duration, onPatter
 				return
 			default:
 
-				l := e.CurrentLine()
-				e.ForEachPattern(func(pattern *SunvoxPattern) bool {
+				l := s.CurrentLine()
+				s.ForEachPattern(func(pattern *SunvoxPattern) bool {
 					lc, _ := pattern.LineCount()
 
 					if l >= pattern.X() && l <= pattern.X()+lc {
@@ -1084,7 +1029,7 @@ func (e *SunvoxChannel) SetOnPatternTouch(pollResolution time.Duration, onPatter
 				for patternIndex := range touchingPatterns {
 					_, wasTouching := wasTouchingPatterns[patternIndex]
 					if !wasTouching {
-						if !onPatternTouch(e.PatternByIndex(patternIndex), true) {
+						if !onPatternTouch(s.PatternByIndex(patternIndex), true) {
 							return
 						}
 					}
@@ -1093,7 +1038,7 @@ func (e *SunvoxChannel) SetOnPatternTouch(pollResolution time.Duration, onPatter
 				for patternIndex := range wasTouchingPatterns {
 					_, nowTouching := touchingPatterns[patternIndex]
 					if !nowTouching {
-						if !onPatternTouch(e.PatternByIndex(patternIndex), false) {
+						if !onPatternTouch(s.PatternByIndex(patternIndex), false) {
 							return
 						}
 					}
@@ -1115,43 +1060,43 @@ func (e *SunvoxChannel) SetOnPatternTouch(pollResolution time.Duration, onPatter
 
 	}(cancel)
 
-	e.goroutineCancels["SetOnPatternTouch"] = cancel
+	s.goroutineCancels["SetOnPatternTouch"] = cancel
 
 }
 
 // CurrentSignalLevel returns the current signal level of the engine, ranging from 0 to 1 for the left
 // and right audio channels.
-func (e *SunvoxChannel) CurrentSignalLevel() (float32, float32) {
-	left := getCurrentSignalLevel(e.Index, 0)
-	right := getCurrentSignalLevel(e.Index, 1)
+func (s *SunvoxChannel) CurrentSignalLevel() (float32, float32) {
+	left := getCurrentSignalLevel(s.Index, 0)
+	right := getCurrentSignalLevel(s.Index, 1)
 	return float32(left) / 255, float32(right) / 255
 }
 
 // CurrentLine returns the current line of playback for the Sunvox project playing through the Channel.
-func (e *SunvoxChannel) CurrentLine() int {
-	return int(getCurrentLine(e.Index))
+func (s *SunvoxChannel) CurrentLine() int {
+	return int(getCurrentLine(s.Index))
 }
 
 // LengthInFrames returns the length of the project in frames.
-func (e *SunvoxChannel) LengthInFrames() int {
-	return int(getLengthFrames(e.Index))
+func (s *SunvoxChannel) LengthInFrames() int {
+	return int(getLengthFrames(s.Index))
 }
 
 // LengthInFrames returns the length of the project in frames.
-func (e *SunvoxChannel) LengthInLines() int {
-	return int(getLengthLines(e.Index))
+func (s *SunvoxChannel) LengthInLines() int {
+	return int(getLengthLines(s.Index))
 }
 
 // Length returns the length of the project as a time.Duration.
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
-func (e *SunvoxChannel) Length() (time.Duration, error) {
-	s, err := engine.SampleRate()
+func (s *SunvoxChannel) Length() (time.Duration, error) {
+	sampleRate, err := engine.SampleRate()
 	if err != nil {
 		return 0, errors.New("error calculating the length of the sunvox project in time due to a sample rate retrieval issue")
 	}
-	l := float32(e.LengthInFrames()) / float32(s)
+	l := float32(s.LengthInFrames()) / float32(sampleRate)
 	return time.Duration(l) * time.Second, nil
 }
 
@@ -1159,10 +1104,10 @@ func (e *SunvoxChannel) Length() (time.Duration, error) {
 // When paused, all audio stops (including echos, delays, etc).
 //
 // This does not pause the playback state of the project
-// (i.e. if it was playing a song, it still is, even if the audio engine is paused).
+// (i.e. if it was playing a song, it still is, even if the audio engine is paused, regardless of if a song is playing.).
 //
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s *SunvoxChannel) PauseAudioEngine() error {
 	res := pause(s.Index)
@@ -1176,7 +1121,7 @@ func (s *SunvoxChannel) PauseAudioEngine() error {
 // When resumed, any executing audio continues (including echos, delays, etc).
 //
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s *SunvoxChannel) ResumeAudioEngine() error {
 	res := resume(s.Index)
@@ -1186,17 +1131,24 @@ func (s *SunvoxChannel) ResumeAudioEngine() error {
 	return nil
 }
 
-// Looping returns if the SunvoxChannel is set to loop audio playback.
-func (s *SunvoxChannel) Looping() bool {
+// IsLooping returns if the SunvoxChannel is set to loop audio playback (which is the default).
+func (s *SunvoxChannel) IsLooping() bool {
 	return getAutostop(s.Index) == 0
 }
 
 // SetLooping sets whether the SunvoxChannel should loop.
 //
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s *SunvoxChannel) SetLooping(loop bool) error {
+
+	if loop == s.IsLooping() {
+		return nil
+	}
+
+	s.PauseAudioEngine()
+	defer s.ResumeAudioEngine()
 
 	st := 1
 	if loop {
@@ -1213,17 +1165,19 @@ func (s *SunvoxChannel) SetLooping(loop bool) error {
 }
 
 // Returns if the channel is currently playing back audio.
-// Note that IsPlaying may still return false after calling an asynchronous playback method.
+// This will return true even if a one-shot / non-looped song is stopped at the end of the song.
 func (s *SunvoxChannel) IsPlaying() bool {
-	if s.playing.Load() {
-		return endOfSong(s.Index) == 0 // Note that this only works if we're not queueing playback
-	}
-	return false
+	return s.playing
+}
+
+// Returns if the channel is at the end of the song (only if the song does not loop).
+func (s *SunvoxChannel) IsAtEndOfSong() bool {
+	return endOfSong(s.Index) == 1
 }
 
 // PatternCount returns the number of patterns in the channel, and an error if it was impossible to determine.
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s *SunvoxChannel) PatternCount() (int, error) {
 
@@ -1300,7 +1254,7 @@ func (s *SunvoxChannel) ForEachPattern(forEach func(pattern *SunvoxPattern) bool
 // Locks the channel for simultaneous read/write from different threads / goroutines for the same channel.
 // Some functions marked as "USE LOCK/UNLOCK" can't work without locking at all.
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s *SunvoxChannel) Lock() error {
 	res := lock(s.Index)
@@ -1313,7 +1267,7 @@ func (s *SunvoxChannel) Lock() error {
 // Unlocks the channel for simultaneous read/write from different threads / goroutines for the same channel.
 // Some functions marked as "USE LOCK/UNLOCK" can't work without locking at all.
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s *SunvoxChannel) Unlock() error {
 	res := unlock(s.Index)
@@ -1325,7 +1279,7 @@ func (s *SunvoxChannel) Unlock() error {
 
 // Close closes the channel and removes it from playback.
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s *SunvoxChannel) Close() error {
 	res := closeSlot(s.Index)
@@ -1334,7 +1288,7 @@ func (s *SunvoxChannel) Close() error {
 	}
 	delete(engine.channels, s.Index)
 
-	// Cancel all running goroutines
+	// Cancel all running callback goroutines
 	s.cancelRunningGoroutine("")
 
 	return nil
@@ -1359,7 +1313,7 @@ func (s *SunvoxChannel) cancelRunningGoroutine(cancelName string) {
 // the current time. Otherwise, the resulting time is the timestamp + sound latency * 2 (with timestamp
 // being retrieved from GetTicks()).
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s *SunvoxChannel) SetEventTimestamp(setTimestamp bool, timestamp uint32) error {
 	set := 0
@@ -1395,9 +1349,11 @@ func (p *SunvoxPattern) IsValid() bool {
 
 // SetXY sets the X (line position) and Y of the pattern to the given values.
 // If the SunvoxPattern is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (p *SunvoxPattern) SetXY(x, y int) error {
+	p.Channel.PauseAudioEngine()
+	defer p.Channel.ResumeAudioEngine()
 	p.Channel.Lock()
 	res := setPatternXY(p.Channel.Index, p.Index, x, y)
 	if res != 0 {
@@ -1409,7 +1365,7 @@ func (p *SunvoxPattern) SetXY(x, y int) error {
 
 // Move moves the pattern by the dx (with dx being in lines) and dy values specified.
 // If the SunvoxPattern is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (p *SunvoxPattern) Move(dx, dy int) error {
 	x := p.X()
@@ -1440,12 +1396,14 @@ func (p *SunvoxPattern) CustomLooplessX() int {
 		// Less than -100K line number, we're gonna assume it must be due to a custom loop, haha
 		if x < -100_000 {
 			x += customLoopLineAmount
+		} else {
+			x += p.Channel.customLoopStart
 		}
 	}
 	return x
 }
 
-// CustomLooplessX2 returns the Line number (x-coordinate) of the pattern in Sunvox as if there was no
+// CustomLooplessX2 returns the Line number (x-coordinate) of the end of the pattern in Sunvox as if there was no
 // custom loop set.
 func (p *SunvoxPattern) CustomLooplessX2() int {
 	x := p.X2()
@@ -1453,6 +1411,8 @@ func (p *SunvoxPattern) CustomLooplessX2() int {
 		// Less than -100K line number, we're gonna assume it must be due to a custom loop, haha
 		if x < -100_000 {
 			x += customLoopLineAmount
+		} else {
+			x += p.Channel.customLoopStart
 		}
 	}
 	return x
@@ -1466,7 +1426,7 @@ func (p *SunvoxPattern) Name() string {
 // SetMute sets the pattern to be muted (or not). It returns whether the channel was previously muted or not,
 // and an error if muting could not be done for whatever reason.
 // If the SunvoxPattern is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (p *SunvoxPattern) SetMute(muted bool) (bool, error) {
 	m := 0
@@ -1494,22 +1454,34 @@ func (p *SunvoxPattern) SetMute(muted bool) (bool, error) {
 	return false, nil
 }
 
+var cachedPatternData = map[int]map[string]any{}
+
 // LineCount returns the number of lines in the pattern.
 // If the SunvoxPattern is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (p *SunvoxPattern) LineCount() (int, error) {
+
+	if v := patternCache.Get(p.Index, "LineCount"); v != nil {
+		return v.(int), nil
+	}
+
+	p.Channel.PauseAudioEngine()
+	defer p.Channel.ResumeAudioEngine()
 
 	res := getPatternLineCount(p.Channel.Index, p.Index)
 	if res < 0 {
 		return int(res), errors.New(fmt.Sprintf("error getting pattern line count from channel %d and pattern %d", p.Channel.Index, p.Index))
 	}
+
+	patternCache.Set(p.Index, "LineCount", int(res))
+
 	return int(res), nil
 }
 
 // TrackCount returns the number of tracks in the pattern.
 // If the SunvoxPattern is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (p *SunvoxPattern) TrackCount() (int, error) {
 
@@ -1522,7 +1494,7 @@ func (p *SunvoxPattern) TrackCount() (int, error) {
 
 // Data returns the data from the pattern for reading and modification.
 // If the SunvoxPattern is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (p *SunvoxPattern) Data() (*SunvoxPatternData, error) {
 	addr := getPatternData(p.Channel.Index, p.Index)
@@ -1566,7 +1538,7 @@ func (s *SunvoxChannel) ForEachModule(forEach func(module *SunvoxModule) bool) e
 	if err != nil {
 		return err
 	}
-	for i := 0; i < 1_000_000; i++ {
+	for i := 0; i < maxModCount; i++ {
 		mod := s.ModuleByIndex(i)
 		if mod == nil {
 			continue
@@ -1575,17 +1547,13 @@ func (s *SunvoxChannel) ForEachModule(forEach func(module *SunvoxModule) bool) e
 			break
 		}
 		modCount++
-
-		if modCount >= maxModCount {
-			break
-		}
 	}
 	return nil
 }
 
 // ModuleCount returns the number of modules in the project.
 // If the SunvoxChannel is unable to execute the function for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (c *SunvoxChannel) ModuleCount() (int, error) {
 
@@ -1636,7 +1604,7 @@ func (c *SunvoxChannel) OutputModule() *SunvoxModule {
 
 // SetBPM sets the BPM for playback in the channel to the desired BPM (cast down to integers), with a minimum of 32 BPM.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (c *SunvoxChannel) SetBPM(bpm float32) error {
 	if bpm < 0x0020 {
@@ -1652,7 +1620,7 @@ func (c *SunvoxChannel) BPM() float32 {
 
 // SetTPL sets the TPL (ticks per line) for the project. The maximum value is 1F (31).
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (c *SunvoxChannel) SetTPL(tpl int) error {
 	if tpl > 0x001F {
@@ -1689,9 +1657,15 @@ func (m *SunvoxModule) Name() string {
 	return getModuleName(m.Channel.Index, m.Index)
 }
 
+// IsValid returns if the SunvoxModule is valid / exists.
+func (m *SunvoxModule) IsValid() bool {
+	flags := getModuleFlags(m.Channel.Index, m.Index)
+	return flags >= 0 && (flags&ModuleFlagExists > 0)
+}
+
 // Flags returns the flags set on the given module as a int32 flag set.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) Flags() (int32, error) {
 	flags := getModuleFlags(m.Channel.Index, m.Index)
@@ -1703,7 +1677,7 @@ func (m *SunvoxModule) Flags() (int32, error) {
 
 // Sets the bypass, solo, and mute values for the module. Note that this works only for instruments, not effects.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) SetBSM(bypass, solo, mute bool) error {
 	bsm := 0
@@ -1721,7 +1695,7 @@ func (m *SunvoxModule) SetBSM(bypass, solo, mute bool) error {
 
 // ControllerValue returns the value associated with the control index - for hexadecimal, you can precede the value with "0x".
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) ControllerValue(ctrlNum int) (int, error) {
 	if ctrlNum <= 0 {
@@ -1736,7 +1710,7 @@ func (m *SunvoxModule) ControllerValue(ctrlNum int) (int, error) {
 
 // ControllerName returns the name associated with the control index - for hexadecimal, you can precede the value with "0x".
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) ControllerName(ctrlNum int) (string, error) {
 	if ctrlNum <= 0 {
@@ -1748,7 +1722,7 @@ func (m *SunvoxModule) ControllerName(ctrlNum int) (string, error) {
 // ControllerMinimum returns the minimum value in the range associated with the control index -
 // for hexadecimal, you can precede the value with "0x".
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) ControllerMinimum(ctrlNum int) (int, error) {
 	if ctrlNum <= 0 {
@@ -1764,7 +1738,7 @@ func (m *SunvoxModule) ControllerMinimum(ctrlNum int) (int, error) {
 // ControllerMaximum returns the maximum value in the range associated with the control index -
 // for hexadecimal, you can precede the value with "0x".
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) ControllerMaximum(ctrlNum int) (int, error) {
 	if ctrlNum <= 0 {
@@ -1796,7 +1770,7 @@ func (m *SunvoxModule) SetControllerValue(ctrlNum, value int) error {
 
 // Connect connects a Module to a specified other Module.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) Connect(dest *SunvoxModule) error {
 
@@ -1821,7 +1795,7 @@ func (m *SunvoxModule) Connect(dest *SunvoxModule) error {
 
 // Disconnect disconnects a Module from a specified other Module.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) Disconnect(dest *SunvoxModule) error {
 
@@ -1867,7 +1841,7 @@ func (m *SunvoxModule) RelativeNote() uint32 {
 // SetFinetune sets the finetune value for the module (with the default being 0).
 // The value can range from -256 to 256.
 // If the function is unable to execute for whatever reason, it will return an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) SetFinetune(finetune int) error {
 	err := setModuleFinetune(m.Channel.Index, m.Index, finetune)
@@ -1879,7 +1853,7 @@ func (m *SunvoxModule) SetFinetune(finetune int) error {
 
 // SetRelativeNote sets the relative note value for the module (with the default being 0).
 // If the function is unable to execute for whatever reason, it will return an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (m *SunvoxModule) SetRelativeNote(relativeNote int) error {
 	err := setModuleRelativeNote(m.Channel.Index, m.Index, relativeNote)
@@ -1925,7 +1899,7 @@ func (s SunvoxPatternData) noteData(trackNum, lineNum int) (*SunvoxPatternNoteDa
 // Note returns the note of the track and line given, from hexadecimal.
 // C5 is 61.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) Note(trackNum, lineNum int) (uint8, error) {
 	note, err := s.noteData(trackNum, lineNum)
@@ -1939,7 +1913,7 @@ func (s SunvoxPatternData) Note(trackNum, lineNum int) (uint8, error) {
 // You can use the NoteCommand constants for special note types.
 // C5 is 61.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) SetNote(trackNum, lineNum int, noteValue uint8) error {
 	note, err := s.noteData(trackNum, lineNum)
@@ -1952,7 +1926,7 @@ func (s SunvoxPatternData) SetNote(trackNum, lineNum int, noteValue uint8) error
 
 // Velocity returns the velocity of the given note data, ranging from 0-129 (with 0 being the default volume level).
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) Velocity(trackNum, lineNum int) (uint8, error) {
 	note, err := s.noteData(trackNum, lineNum)
@@ -1964,7 +1938,7 @@ func (s SunvoxPatternData) Velocity(trackNum, lineNum int) (uint8, error) {
 
 // SetVelocity sets the velocity of the given note data, ranging from 0-129 (with 0 being the default volume level).
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) SetVelocity(trackNum, lineNum int, velocity uint8) error {
 	note, err := s.noteData(trackNum, lineNum)
@@ -1977,7 +1951,7 @@ func (s SunvoxPatternData) SetVelocity(trackNum, lineNum int, velocity uint8) er
 
 // Module returns the module number of the given note data for the track and line provided.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) Module(trackNum, lineNum int) (uint16, error) {
 	note, err := s.noteData(trackNum, lineNum)
@@ -1989,7 +1963,7 @@ func (s SunvoxPatternData) Module(trackNum, lineNum int) (uint16, error) {
 
 // SetModule sets the module number of the given note data to the value given.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) SetModule(trackNum, lineNum int, moduleNumber uint16) error {
 	note, err := s.noteData(trackNum, lineNum)
@@ -2002,7 +1976,7 @@ func (s SunvoxPatternData) SetModule(trackNum, lineNum int, moduleNumber uint16)
 
 // Controller returns the specified controller index for the given note data for the track and line provided.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) Controller(trackNum, lineNum int) (uint16, error) {
 	note, err := s.noteData(trackNum, lineNum)
@@ -2014,7 +1988,7 @@ func (s SunvoxPatternData) Controller(trackNum, lineNum int) (uint16, error) {
 
 // SetController sets the specified controller index for the given note data for the track and line provided.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) SetController(trackNum, lineNum int, controllerNumber uint16) error {
 	note, err := s.noteData(trackNum, lineNum)
@@ -2027,7 +2001,7 @@ func (s SunvoxPatternData) SetController(trackNum, lineNum int, controllerNumber
 
 // ControllerValue returns the controller value (XXYY) for the given note data for the track and line provided.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) ControllerValue(trackNum, lineNum int) (uint16, error) {
 	note, err := s.noteData(trackNum, lineNum)
@@ -2039,7 +2013,7 @@ func (s SunvoxPatternData) ControllerValue(trackNum, lineNum int) (uint16, error
 
 // SetControllerValue sets the controller value (XXYY) for the given note data for the track and line provided.
 // If the function is unable to execute for whatever reason, the function returns an
-// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the Engine
+// error code (and, if the SunvoxEngine is initialized in debug mode (which is the default), the engine
 // will print exactly what the error might be).
 func (s SunvoxPatternData) SetControllerValue(trackNum, lineNum int, value uint16) error {
 	// TODO: Add a hexadecimal converter, a XX vs YY variant, etc.
